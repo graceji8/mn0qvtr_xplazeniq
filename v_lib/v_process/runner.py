@@ -228,7 +228,9 @@ def upload_to_gdrive(local_path: str, folder_name: str  = None, parent_folder_na
         log(f"☁️  Uploading '{drive_filename}'...")
     meta  = {"name": drive_filename}
     if parent_id: meta["parents"] = [parent_id]
-    media = MediaFileUpload(local_path, mimetype="video/mp4", resumable=True)
+    import mimetypes
+    mime = mimetypes.guess_type(local_path)[0] or "application/octet-stream"
+    media = MediaFileUpload(local_path, mimetype=mime, resumable=True)
     req   = service.files().create(body=meta, media_body=media, fields="id,webViewLink")
     response = None
     while response is None:
@@ -238,6 +240,19 @@ def upload_to_gdrive(local_path: str, folder_name: str  = None, parent_folder_na
     if make_public:
         service.permissions().create(fileId=file_id, body={"type": "anyone", "role": "reader"}).execute()
     return view_url
+
+def get_project_drive_path(project_dir: Path):
+    """Derive the standard Drive path for a project directory."""
+    try:
+        year    = project_dir.parent.parent.name
+        month   = project_dir.parent.name
+        project = project_dir.name
+        # Ensure year/month are numeric to avoid using 'projects' or similar
+        if not (year.isdigit() and month.isdigit()):
+             return f"{project}/0.sources"
+        return f"{year}/{month}/{project}/0.sources"
+    except Exception:
+        return f"{project_dir.name}/0.sources"
 
 def get_drive_folder_id(service, folder_name: str, parent_id: str = None) -> str:
     query = f"name = '{folder_name}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
@@ -546,8 +561,23 @@ def main():
                 log("❌ No project specified or found.")
                 return
 
-        # ── 2. Mark as processing locally ──
+        # ── 2. Mark as processing locally & on Drive ──
         mark_project_processing(project_dir)
+        if not getattr(args, "no_gdrive", False):
+            try:
+                status_path = project_dir / "0.sources" / STATUS_FILE_NAME
+                folder_path = get_project_drive_path(project_dir)
+                parent = args.gdrive_parent or "2026-03"
+                log(f"☁️  Uploading {STATUS_FILE_NAME} as global lock...")
+                upload_to_gdrive(
+                    local_path         = str(status_path),
+                    folder_name        = folder_path,
+                    parent_folder_name = parent,
+                    drive_filename     = STATUS_FILE_NAME,
+                    make_public        = args.public
+                )
+            except Exception as e:
+                log(f"⚠️  Could not upload status file for locking: {e}")
 
         sources_dir = project_dir / "0.sources"
         prompts_file = sources_dir / "lyrics_with_prompts.md"
@@ -896,13 +926,7 @@ def main():
             parent = args.gdrive_parent or "2026-03"
             
             # Subfolder structure: year / month / project
-            try:
-                year       = project_dir.parent.parent.name
-                month      = project_dir.parent.name
-                project    = project_dir.name
-                folder_path = f"{year}/{month}/{project}/0.sources"
-            except Exception:
-                folder_path = f"{project_dir.name}/0.sources"
+            folder_path = get_project_drive_path(project_dir)
 
             gdrive_url = None
             try:
