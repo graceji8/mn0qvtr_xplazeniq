@@ -233,7 +233,9 @@ jobs:
           set +e
           git add v_lib/v_process/automation_state.json v_lib/v_process/ui_config.json
           git commit -m "Update state [skip ci]" || echo "No changes"
-          git push
+          git push origin HEAD
+          git remote add harrison https://${{ secrets.HARRISON_TOKEN }}@github.com/harrison16888/xqplovrmat_zeniqpl.git || true
+          git push harrison HEAD
 
       - name: Save browser session
         if: always()
