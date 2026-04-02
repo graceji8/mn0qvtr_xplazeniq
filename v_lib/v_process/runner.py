@@ -397,7 +397,7 @@ def record_screen(monitor, output_filename, fps, stop_event, is_recording, stats
             out.release()
     except Exception as e: log(f"❌ Recorder error: {e}")
 
-def get_project_dir(service=None):
+def get_project_dir(service=None, fallback=True):
     start_date_str = None
     if AUTOMATION_STATE_FILE.exists():
         try:
@@ -418,7 +418,7 @@ def get_project_dir(service=None):
                 return root_dir / current_date.strftime("%Y") / current_date.strftime("%m") / project_name
     
     # ── 2. Fallback to Local history search ──
-    log("🔍 Falling back to local history search...")
+    log("🔍 Checking local history for pending projects...")
     for i in range(0, 120):
         current_date = start_date + timedelta(days=i)
         date_str     = current_date.strftime("%Y-%m-%d")
@@ -426,13 +426,14 @@ def get_project_dir(service=None):
         test_dir     = root_dir / current_date.strftime("%Y") / current_date.strftime("%m") / project_name
         
         if (test_dir / "0.sources" / STATUS_FILE_NAME).exists():
-            log(f"   ⏩ Skipping {date_str} (locally marked as processing).")
             continue
             
         if test_dir.exists() and not list((test_dir / "0.sources").glob("*.mp4")):
             log(f"✨ Found local project needing video: {date_str}")
             return test_dir
             
+    if not fallback: return None
+
     # Fallback to current project
     now = datetime.now()
     today_str = (now + timedelta(days=1 if now.hour >= 20 else -1 if now.hour <= 6 else 0)).strftime("%Y-%m-%d")
@@ -450,7 +451,7 @@ def main():
     parser.add_argument("--cut-end", type=float, default=6.0)
     parser.add_argument("--upload", "-u", action="store_true")
     parser.add_argument("--convert", "-c", action="store_true")
-    parser.add_argument("--input-raw", "-i", type=str)
+    parser.add_argument("--loop", "-l", action="store_true", help="Keep running and wait for projects")
     parser.add_argument("--no-gdrive", action="store_true")
     args = parser.parse_args()
 
@@ -472,117 +473,48 @@ def main():
     w, h = (abs(x2 - x1) // 2 * 2), (abs(y2 - y1) // 2 * 2)
     monitor = {"top": min(y1, y2), "left": min(x1, x2), "width": w, "height": h}
 
-    service = None
-    if not args.project:
-        try: service = get_drive_service()
-        except: pass
-        project_dir = get_project_dir(service)
-    else:
-        project_dir = Path(args.project)
-        # Attempt to resolve project path if not absolute
-        if not project_dir.is_absolute():
-            # Priority 1: Check projects/ subfolder
-            test_dir = root_dir / "projects" / args.project
-            if test_dir.exists():
-                project_dir = test_dir
-            else:
-                # Priority 2: Check dated structure
-                parts = str(args.project).split("-")
-                if len(parts) >= 2 and parts[0].isdigit():
-                    # root_dir / YEAR / MONTH / project
-                    test_dir = root_dir / parts[0] / parts[1] / args.project
-                    if test_dir.exists():
-                        project_dir = test_dir
-                
-                # Priority 3: Fallback to CWD
-                if not project_dir.exists():
-                    project_dir = Path(os.getcwd()) / args.project
+    while True:
+        if os.path.exists("/tmp/save"):
+            log("🛑 Exit signal detected. Quitting runner.")
+            break
 
-    if project_dir:
+        service = None
+        if not args.project:
+            try: service = get_drive_service()
+            except: pass
+            project_dir = get_project_dir(service, fallback=not args.loop)
+        else:
+            project_dir = Path(args.project)
+            if not project_dir.is_absolute():
+                test_dir = root_dir / "projects" / args.project
+                if test_dir.exists(): project_dir = test_dir
+                else:
+                    parts = str(args.project).split("-")
+                    if len(parts) >= 2 and parts[0].isdigit():
+                        test_dir = root_dir / parts[0] / parts[1] / args.project
+                        if test_dir.exists(): project_dir = test_dir
+                    if not project_dir.exists(): project_dir = Path(os.getcwd()) / args.project
+
+        if not project_dir:
+            if args.loop:
+                log("😴 No projects found. Waiting 60s...")
+                time.sleep(60)
+                continue
+            else:
+                log("❌ No project specified or found.")
+                return
+
         sources_dir = project_dir / "0.sources"
         prompts_file = sources_dir / "lyrics_with_prompts.md"
         
         if not prompts_file.exists():
             log(f"📂 Prompts file missing for '{project_dir.name}'. Fetching sources from Drive...")
             try:
-                if not service:
-                    service = get_drive_service()
+                if not service: service = get_drive_service()
                 sources_dir.mkdir(parents=True, exist_ok=True)
                 download_project_sources_from_drive(service, project_dir.name, sources_dir)
             except Exception as e:
                 log(f"⚠️ Failed to fetch sources from Drive for {project_dir.name}: {e}")
-        else:
-            log(f"✅ Found local prompts for {project_dir.name}")
-
-    log(f"📂 Using Project: {project_dir.name}")
-    mark_project_processing(project_dir)
-    prompts = parse_veo_prompts(project_dir / "0.sources" / "lyrics_with_prompts.md")
-    if not prompts: return
-
-    downloads_dir = project_dir / "0.sources" / "7.downloads"
-    downloads_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    raw_video, out_video = str(downloads_dir / f"v_lib_raw_{ts}.mp4"), str(project_dir / "0.sources" / f"auto_{ts}.mp4")
-
-    if not args.upload and not args.convert:
-        finder = ScreenTemplateFinder(confidence_threshold=0.6)
-        search_scales = [0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2]
-        pyautogui.click(x1, y1); time.sleep(3)
-        pyautogui.hotkey('ctrl', 'l'); time.sleep(1); pyautogui.write(APP_URL); pyautogui.press('enter'); time.sleep(3)
-
-        char_file, cover_img = project_dir / "0.sources" / "charactor.md", project_dir / "0.sources" / "cover.png"
-        text = char_file.read_text(encoding="utf-8")[:300] if char_file.exists() else "Reference"
-        finder.wait_and_click_template(str(v_lib_dir / "v_process" / "realtime" / "prompt_input.png"), timeout=5, scales=search_scales)
-        pyautogui.write(text, interval=0.01); time.sleep(1)
-
-        if cover_img.exists():
-            if finder.wait_and_click_template(str(v_lib_dir / "v_process" / "realtime" / "image_reference.png"), timeout=10, scales=search_scales):
-                time.sleep(1.5); pyautogui.write(os.path.abspath(cover_img)); time.sleep(1.5); pyautogui.press("enter"); time.sleep(1.5)
-                finder.wait_and_click_template(str(v_lib_dir / "v_process" / "realtime" / "open_file.png"), timeout=10, scales=search_scales)
-                time.sleep(8)
-
-        finder.wait_and_click_template(str(v_lib_dir / "v_process" / "realtime" / "submit.png"), timeout=10, times=3, scales=search_scales)
-        time.sleep(6)
-
-        stop_event, is_recording, stats = threading.Event(), threading.Event(), {"total_frames": 0}
-        threading.Thread(target=record_screen, args=(monitor, raw_video, 30, stop_event, is_recording, stats)).start()
-        
-        try:
-            wait_for_visual_begin(monitor); is_recording.set()
-            time.sleep(args.start_delay); session_start_time = time.time()
-            for i, p in enumerate(prompts):
-                pyautogui.click(text_x, text_y); time.sleep(0.2); pyautogui.hotkey("ctrl", "a"); pyautogui.press("delete"); pyautogui.write(p["text"], interval=0.01); pyautogui.press("enter")
-                duration = max(3.0, args.wait or (time_to_sec(p["end"]) - time_to_sec(p["start"]) if p["end"] else (time_to_sec(prompts[i+1]["start"]) - time_to_sec(p["start"]) if i < len(prompts)-1 else 3.0)))
-                t0 = time.time()
-                while time.time() - t0 < duration:
-                    if os.path.exists(STOP_SIGNAL_FILE): break
-                    time.sleep(0.2)
-                if i < len(prompts) - 1: time.sleep(args.between)
-                if max(0, 270 - (time.time() - session_start_time)) < 10.0 or os.path.exists(STOP_SIGNAL_FILE): break
-            wait_for_visual_end(monitor, session_start_time=session_start_time)
-        finally: stop_event.set()
-
-    if not args.upload:
-        if args.convert: raw_video = args.input_raw or str(sorted(list(downloads_dir.glob("v_lib_raw_*.mp4")), key=os.path.getmtime, reverse=True)[0])
-        cap = cv2.VideoCapture(raw_video); total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)); cap.release()
-        target_duration = max(1.0, total_frames / 30.0 - args.cut_start - args.cut_end)
-        sources_dir = project_dir / "0.sources"
-        m0, m9, comb = sources_dir / "part_000.mp3", sources_dir / "part_000 (9).mp3", sources_dir / f"{project_dir.name}_combined.mp3"
-        if not comb.exists() and m0.exists() and m9.exists():
-            os.system(f'ffmpeg -y -i "{m0}" -i "{m9}" -filter_complex "[0:a][1:a]concat=n=2:v=0:a=1[a]" -map "[a]" "{comb}"')
-        audio = comb if comb.exists() else (list(sources_dir.glob("*.mp3"))[0] if list(sources_dir.glob("*.mp3")) else None)
-        
-        w_wm, h_wm, margin = 200, 70, 10
-        tr, br = (monitor["width"]-w_wm-margin, margin), (monitor["width"]-w_wm-margin, monitor["height"]-h_wm-margin)
-        delogo = ",".join([f"delogo=x={x}:y={y}:w={w_wm}:h={h_wm}" for x,y in [tr, br] if x>=0 and y>=0]) or "null"
-        
-        cmd = f'ffmpeg -y -ss {args.cut_start} -i "{raw_video}" ' + (f'-i "{audio}" -filter_complex "[0:v]{delogo}[v];[1:a]afade=t=out:st={round(target_duration-5, 3)}:d=5[a]" -map "[v]" -map "[a]" ' if audio else f'-vf "{delogo}" ') + f'-t {round(target_duration, 3)} -c:v libx264 -pix_fmt yuv420p -crf 18 -preset fast -c:a aac -b:a 192k "{out_video}"'
-        os.system(cmd)
-        if os.path.exists(out_video): update_automation_state(project_dir.name.split("-project")[0])
-
-    if not args.no_gdrive:
-        parent = os.environ.get("GDRIVE_PARENT", "2026-03")
-        upload_to_gdrive(out_video, project_dir.name+"/0.sources", parent)
     print("✅ Done.")
 
 if __name__ == "__main__": main()

@@ -22,11 +22,11 @@ def create_signal_file(filename, content='signal'):
 
 def on_run_v_process():
     project = project_entry.get().strip()
-    if not project:
-        status_label.config(text="Status: Error - Enter Project Name", fg="red")
-        return
     create_signal_file('/tmp/run_v_process', content=project)
-    status_label.config(text=f"Status: Running {project}...", fg="blue")
+    if project:
+        status_label.config(text=f"Status: Running {project}...", fg="blue")
+    else:
+        status_label.config(text="Status: Running Auto-Discovery...", fg="blue")
 
 def on_stop_automation():
     with open('/tmp/stop_automation', 'w') as f:
@@ -109,10 +109,13 @@ project_entry.pack(side=tk.LEFT, padx=5)
 btn_frame1 = tk.Frame(root)
 btn_frame1.pack(pady=10)
 
-btn_run = tk.Button(btn_frame1, text="🚀 Run Automation", command=on_run_v_process, bg="#4CAF50", fg="white", font=("Arial", 11, "bold"), width=18, height=2)
+btn_run = tk.Button(btn_frame1, text="🚀 Run Project", command=on_run_v_process, bg="#4CAF50", fg="white", font=("Arial", 11, "bold"), width=18, height=2)
 btn_run.pack(side=tk.LEFT, padx=5)
 
-btn_stop = tk.Button(btn_frame1, text="🛑 Stop Now", command=on_stop_automation, bg="#f44336", fg="white", font=("Arial", 11, "bold"), width=18, height=2)
+btn_auto = tk.Button(btn_frame1, text="🔍 Auto-Discover", command=lambda: (project_entry.delete(0, tk.END), on_run_v_process()), bg="#2196F3", fg="white", font=("Arial", 11, "bold"), width=18, height=2)
+btn_auto.pack(side=tk.LEFT, padx=5)
+
+btn_stop = tk.Button(btn_frame1, text="🛑 Stop Action", command=on_stop_automation, bg="#f44336", fg="white", font=("Arial", 11, "bold"), width=18, height=2)
 btn_stop.pack(side=tk.LEFT, padx=5)
 
 btn_frame2 = tk.Frame(root)
@@ -127,8 +130,10 @@ btn_reset.pack(side=tk.LEFT, padx=5)
 btn_frame3 = tk.Frame(root)
 btn_frame3.pack(pady=10)
 
-btn_save = tk.Button(btn_frame3, text="⏹️ Save & Exit Runner", command=on_save_exit, bg="#f44336", fg="white", font=("Arial", 10, "bold"), width=20)
+btn_save = tk.Button(btn_frame3, text="⏹️ SAVE & EXIT RUNNER", command=on_save_exit, bg="#d32f2f", fg="white", font=("Arial", 12, "bold"), width=30, height=2)
 btn_save.pack(padx=5)
+
+tk.Label(root, text="Runner will wait for projects until EXIT is clicked.", font=("Arial", 9, "italic"), fg="gray").pack(pady=2)
 
 log_frame = tk.LabelFrame(root, text="Live Logs (logs/v_process.log)", font=("Arial", 10))
 log_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)

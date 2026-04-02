@@ -162,7 +162,10 @@ jobs:
 
           # Main Event Loop
           while true; do
-            if [ -f /tmp/save ]; then break; fi
+            if [ -f /tmp/save ]; then 
+              echo "⏹️ Save signal received. Exiting runner loop."
+              break 
+            fi
             
             if [ -f /tmp/run_v_process ]; then
                 RAW_SIGNAL=$(cat /tmp/run_v_process)
@@ -171,10 +174,9 @@ jobs:
                 
                 if [ -n "$PROJECT_NAME" ]; then
                   echo "🎯 Targeted Project: $PROJECT_NAME"
-                  mkdir -p "$(pwd)/projects"
-                  .venv/bin/python v_lib/v_process/runner.py --project "$PROJECT_NAME" 2>&1 | tee -a logs/v_process.log || echo "⚠️ Automation failed for $PROJECT_NAME"
+                  .venv/bin/python v_lib/v_process/runner.py --project "$PROJECT_NAME" 2>&1 | tee -a logs/v_process.log || echo "⚠️ Automation failed"
                 else
-                  echo "🔍 No project specified. Running auto-discovery..."
+                  echo "🔍 Auto-discovery..."
                   .venv/bin/python v_lib/v_process/runner.py 2>&1 | tee -a logs/v_process.log || echo "⚠️ Automation failed"
                 fi
             fi
@@ -188,7 +190,7 @@ jobs:
             sleep 2
           done
 
-      - name: Run V-Process capture (Auto-Run Mode)
+      - name: Run V-Process (Persistent Auto-Run Mode)
         if: ${{ github.event.inputs.manual_login != 'true' && github.event.inputs.debug_mode != 'true' }}
         env:
           V_URL: ${{ secrets.V_URL }}
@@ -197,16 +199,20 @@ jobs:
           source .venv/bin/activate
           export DISPLAY=:99
           mkdir -p logs
+          
+          # Start Control Panel in background so it's available via VNC if needed
+          .venv/bin/python v_lib/v_process/controls.py &
+          
           google-chrome --no-sandbox --disable-dev-shm-usage --disable-gpu --remote-debugging-port=9222 --disable-session-crashed-bubble --no-first-run --no-default-browser-check --disable-infobars --window-size=2000,1550 --window-position=0,0 --user-data-dir="$(pwd)/.browser-session" "${V_URL:-https://realtime.pixverse.ai/generate/}" > logs/chrome_startup.log 2>&1 &
-          sleep 15
+          sleep 12
           
           PROJECT_NAME="${{ github.event.inputs.project }}"
           if [ -n "$PROJECT_NAME" ]; then
-            echo "🎯 Targeted Project: $PROJECT_NAME"
-            .venv/bin/python v_lib/v_process/runner.py --project "$PROJECT_NAME" 2>&1 | tee -a logs/v_process.log || echo "⚠️ Automation failed for $PROJECT_NAME"
+            echo "🎯 Targeted Project: $PROJECT_NAME (Looping enabled)"
+            .venv/bin/python v_lib/v_process/runner.py --project "$PROJECT_NAME" --loop 2>&1 | tee -a logs/v_process.log || echo "⚠️ Automation failed"
           else
-            echo "🔍 No project specified. Running auto-discovery via Google Drive..."
-            .venv/bin/python v_lib/v_process/runner.py 2>&1 | tee -a logs/v_process.log || echo "⚠️ Automation failed"
+            echo "🔍 Auto-discovery Mode (Looping enabled)..."
+            .venv/bin/python v_lib/v_process/runner.py --loop 2>&1 | tee -a logs/v_process.log || echo "⚠️ Automation failed"
           fi
 
       - name: Upload Results to Google Drive
