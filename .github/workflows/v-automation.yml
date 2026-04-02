@@ -80,6 +80,12 @@ jobs:
           key: v-browser-session-${{ runner.os }}-${{ github.run_id }}
           restore-keys: |
             v-browser-session-${{ runner.os }}-
+
+      - name: Clear stale browser locks
+        run: |
+          rm -f .browser-session/SingletonLock
+          rm -f .browser-session/SingletonCookie
+          find .browser-session -name "lockfile" -delete || true
             
       - name: Create Google Credentials
         run: |

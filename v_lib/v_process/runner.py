@@ -12,6 +12,7 @@ import mss
 import numpy as np
 import pyautogui
 import argparse
+import subprocess
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -54,6 +55,58 @@ except Exception: pass
 
 root_dir    = script_dir.parent.parent
 CONFIG_FILE = script_dir / "ui_config.json"
+BROWSER_SESSION_DIR = root_dir / ".browser-session"
+
+def ensure_chrome_running():
+    """Ensure Chrome is running, clearing stale locks if necessary."""
+    log("🔧 Checking if Chrome is running...")
+    
+    # 1. Clear stale locks
+    lock_file = BROWSER_SESSION_DIR / "SingletonLock"
+    if lock_file.exists():
+        log(f"   🧹 Found stale lock at {lock_file}, removing...")
+        try:
+            lock_file.unlink(missing_ok=True)
+            (BROWSER_SESSION_DIR / "SingletonCookie").unlink(missing_ok=True)
+        except Exception as e:
+            log(f"   ⚠️ Could not remove lock: {e}")
+
+    # 2. Check if running (crude check via remote debugging port)
+    import socket
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(2)
+    result = sock.connect_ex(('127.0.0.1', 9222))
+    sock.close()
+    
+    if result == 0:
+        log("   ✅ Chrome is already running (debug port 9222 active).")
+        return True
+        
+    log("   🚀 Chrome not detected. Attempting to start...")
+    try:
+        chrome_cmd = [
+            "google-chrome",
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--remote-debugging-port=9222",
+            "--disable-session-crashed-bubble",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-infobars",
+            "--window-size=2000,1550",
+            "--window-position=0,0",
+            f"--user-data-dir={BROWSER_SESSION_DIR}",
+            APP_URL
+        ]
+        # Run in background
+        subprocess.Popen(chrome_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        log("   ⏳ Waiting for Chrome to initialize...")
+        time.sleep(8)
+        return True
+    except Exception as e:
+        log(f"   ❌ Failed to start Chrome: {e}")
+        return False
 
 def find_drive_file(filename):
     search_dirs = [script_dir, Path.cwd(), root_dir]
@@ -402,6 +455,11 @@ def main():
     args = parser.parse_args()
 
     print("\n🚀 V-Process Runner Starting...")
+    
+    # Ensure Chrome is ready
+    if not args.upload and not args.convert:
+        ensure_chrome_running()
+        
     config = load_config()
     screen_w, screen_h = pyautogui.size()
     if args.reset or not config:
