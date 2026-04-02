@@ -182,6 +182,19 @@ def get_drive_service():
     return build("drive", "v3", credentials=get_credentials(), cache_discovery=False)
 
 
+def get_drive_full_path(service, file_id: str) -> str:
+    path = []
+    curr = file_id
+    try:
+        while curr:
+            meta = service.files().get(fileId=curr, fields="name, parents").execute()
+            path.append(meta.get("name", ""))
+            parents = meta.get("parents")
+            curr = parents[0] if parents else None
+    except Exception:
+        pass
+    return "/" + "/".join(reversed(path)) if path else ""
+
 def get_or_create_folder(service, folder_name: str, parent_id: str = None) -> str:
     query = f"name = '{folder_name}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
     if parent_id: query += f" and '{parent_id}' in parents"
@@ -209,7 +222,10 @@ def upload_to_gdrive(local_path: str, folder_name: str  = None, parent_folder_na
     existing = results.get("files", [])
     if existing: return existing[0].get("webViewLink")
 
-    log(f"☁️  Uploading '{drive_filename}'...")
+    if parent_id:
+        log(f"☁️  Uploading '{drive_filename}' to {get_drive_full_path(service, parent_id)}...")
+    else:
+        log(f"☁️  Uploading '{drive_filename}'...")
     meta  = {"name": drive_filename}
     if parent_id: meta["parents"] = [parent_id]
     media = MediaFileUpload(local_path, mimetype="video/mp4", resumable=True)
@@ -234,14 +250,7 @@ def resolve_drive_project_id(service, project_name: str, parent_name: str = "202
     """Find a Drive project ID by traversing the PARENT/YEAR/MONTH structure or global search."""
     log(f"🔍 Resolving Drive ID for: {project_name} (parent: {parent_name})")
     
-    # 1. Try global search first (fastest if unique)
-    project_id = get_drive_folder_id(service, project_name)
-    if project_id:
-        # Verify it has a 0.sources folder to avoid false positives with same-name generic folders
-        if get_drive_folder_id(service, "0.sources", project_id):
-            return project_id
-    
-    # 2. Try structured path resolution if global search failed or was incomplete
+    # 1. Try structured path resolution first (most accurate)
     # project_name format: YYYY-MM-DD-project
     match = re.search(r"(\d{4})-(\d{2})-\d{2}-project", project_name)
     if match:
@@ -255,8 +264,17 @@ def resolve_drive_project_id(service, project_name: str, parent_name: str = "202
                 month_id = get_drive_folder_id(service, month, year_id)
                 if month_id:
                     project_id = get_drive_folder_id(service, project_name, month_id)
-                    if project_id:
+                    if project_id and get_drive_folder_id(service, "0.sources", project_id):
                         return project_id
+
+    # 2. Try global search fallback
+    log(f"   ⚠️ Falling back to global search for {project_name}...")
+    project_id = get_drive_folder_id(service, project_name)
+    if project_id:
+        # Verify it has a 0.sources folder to avoid false positives with same-name generic folders
+        if get_drive_folder_id(service, "0.sources", project_id):
+            return project_id
+            
     return None
 
 def get_drive_file_id(service, file_name: str, parent_id: str = None) -> str:
@@ -272,6 +290,12 @@ def download_project_sources_from_drive(service, project_name: str, local_source
     if not project_id: raise FileNotFoundError(f"Project folder '{project_name}' not found on Drive.")
     sources_id = get_drive_folder_id(service, "0.sources", project_id)
     if not sources_id: raise FileNotFoundError(f"'0.sources' not found.")
+    
+    full_path = get_drive_full_path(service, sources_id)
+    results = service.files().list(q=f"'{sources_id}' in parents and trashed = false", fields="files(name)").execute()
+    files = [f['name'] for f in results.get('files', [])]
+    log(f"   📂 Downloading from: {full_path}")
+    log(f"   📄 Files available: {', '.join(files) if files else 'None'}")
 
     files_to_download = ["lyrics_with_prompts.md", "charactor.md", "cover.png"]
     for file_name in files_to_download:
@@ -296,15 +320,27 @@ def download_project_sources_from_drive(service, project_name: str, local_source
             while not done: status, done = downloader.next_chunk()
 
 def check_drive_project_needs_video(service, project_name: str) -> bool:
-    """Check if project on Drive lacks an .mp4 in 0.sources and is not already processing."""
+    """Check if project on Drive lacks an .mp4 in 0.sources, has required files, and is not already processing."""
     log(f"🔍 Checking Drive completion for: {project_name}")
     project_id = resolve_drive_project_id(service, project_name)
     if not project_id: return False
     sources_id = get_drive_folder_id(service, "0.sources", project_id)
-    if not sources_id: return True
-    if get_drive_file_id(service, STATUS_FILE_NAME, sources_id): return False
-    results = service.files().list(q=f"'{sources_id}' in parents and name contains '.mp4' and trashed = false", fields="files(id, name)").execute()
-    return not results.get('files', [])
+    if not sources_id: return False
+
+    full_path = get_drive_full_path(service, sources_id)
+    results = service.files().list(q=f"'{sources_id}' in parents and trashed = false", fields="files(name)").execute()
+    files = [f['name'] for f in results.get('files', [])]
+    
+    log(f"   📁 Drive Path: {full_path}")
+    log(f"   📄 Files: {', '.join(files) if files else 'None'}")
+
+    if not files: return False
+    if STATUS_FILE_NAME in files: return False
+
+    has_mp4 = any(f.endswith('.mp4') for f in files)
+    has_source = any(f.endswith('.mp3') or f.endswith('.md') for f in files)
+    
+    return (not has_mp4) and has_source
 
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -515,6 +551,13 @@ def main():
                 download_project_sources_from_drive(service, project_dir.name, sources_dir)
             except Exception as e:
                 log(f"⚠️ Failed to fetch sources from Drive for {project_dir.name}: {e}")
+
+            if not prompts_file.exists():
+                log(f"🛑 Missing required sources! Pausing runner to let you debug...")
+                log(f"👉 Expected to find: {prompts_file}")
+                while not prompts_file.exists():
+                    time.sleep(5)
+                log("✅ File detected! Resuming...")
     print("✅ Done.")
 
 if __name__ == "__main__": main()
