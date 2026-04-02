@@ -318,18 +318,41 @@ def get_project_dir(service=None):
         try:
             with open(AUTOMATION_STATE_FILE, "r") as f: start_date_str = json.load(f).get("latest_mp4_date")
         except: pass
+    
     start_date = datetime.strptime(start_date_str, "%Y-%m-%d") if start_date_str else datetime.now() - timedelta(days=7)
-    now = datetime.now()
-    today_str = (now + timedelta(days=1 if now.hour >= 20 else -1 if now.hour <= 6 else 0)).strftime("%Y-%m-%d")
+    
+    # ── 1. Check Drive first (if service is available) ──
+    if service:
+        log("🔍 Checking Google Drive for pending projects (priority)...")
+        for i in range(0, 120):
+            current_date = start_date + timedelta(days=i)
+            date_str     = current_date.strftime("%Y-%m-%d")
+            project_name = f"{date_str}-project"
+            if check_drive_project_needs_video(service, project_name):
+                log(f"✨ Found project needing video (on Drive): {date_str}")
+                return root_dir / current_date.strftime("%Y") / current_date.strftime("%m") / project_name
+    
+    # ── 2. Fallback to Local history search ──
+    log("🔍 Falling back to local history search...")
     for i in range(0, 120):
         current_date = start_date + timedelta(days=i)
         date_str     = current_date.strftime("%Y-%m-%d")
         project_name = f"{date_str}-project"
         test_dir     = root_dir / current_date.strftime("%Y") / current_date.strftime("%m") / project_name
-        if (test_dir / "0.sources" / STATUS_FILE_NAME).exists(): continue
-        if service and check_drive_project_needs_video(service, project_name): return test_dir
-        if not service and test_dir.exists() and not list((test_dir / "0.sources").glob("*.mp4")): return test_dir
-    return root_dir / datetime.strptime(today_str, "%Y-%m-%d").strftime("%Y") / datetime.strptime(today_str, "%Y-%m-%d").strftime("%m") / f"{today_str}-project"
+        
+        if (test_dir / "0.sources" / STATUS_FILE_NAME).exists():
+            log(f"   ⏩ Skipping {date_str} (locally marked as processing).")
+            continue
+            
+        if test_dir.exists() and not list((test_dir / "0.sources").glob("*.mp4")):
+            log(f"✨ Found local project needing video: {date_str}")
+            return test_dir
+            
+    # Fallback to current project
+    now = datetime.now()
+    today_str = (now + timedelta(days=1 if now.hour >= 20 else -1 if now.hour <= 6 else 0)).strftime("%Y-%m-%d")
+    today_dt = datetime.strptime(today_str, "%Y-%m-%d")
+    return root_dir / today_dt.strftime("%Y") / today_dt.strftime("%m") / f"{today_str}-project"
 
 def main():
     parser = argparse.ArgumentParser(description="V-Process Automated Capture")
@@ -366,12 +389,23 @@ def main():
         project_dir = get_project_dir(service)
     else: project_dir = Path(args.project)
 
-    if not project_dir.exists():
+    if project_dir:
         sources_dir = project_dir / "0.sources"
-        sources_dir.mkdir(parents=True, exist_ok=True)
-        download_project_sources_from_drive(get_drive_service(), project_dir.name, sources_dir)
+        prompts_file = sources_dir / "lyrics_with_prompts.md"
+        
+        if not prompts_file.exists():
+            log(f"📂 Prompts file missing for '{project_dir.name}'. Fetching sources from Drive...")
+            try:
+                if not service:
+                    service = get_drive_service()
+                sources_dir.mkdir(parents=True, exist_ok=True)
+                download_project_sources_from_drive(service, project_dir.name, sources_dir)
+            except Exception as e:
+                log(f"⚠️ Failed to fetch sources from Drive for {project_dir.name}: {e}")
+        else:
+            log(f"✅ Found local prompts for {project_dir.name}")
 
-    log(f"📂 Project: {project_dir.name}")
+    log(f"📂 Using Project: {project_dir.name}")
     mark_project_processing(project_dir)
     prompts = parse_veo_prompts(project_dir / "0.sources" / "lyrics_with_prompts.md")
     if not prompts: return

@@ -92,18 +92,20 @@ jobs:
 
       - name: Setup Virtual Display
         run: |
+          set +e
           touch ~/.Xauthority
           Xvfb :99 -screen 0 2650x1550x24 &
           echo "DISPLAY=:99" >> $GITHUB_ENV
           echo "XAUTHORITY=$HOME/.Xauthority" >> $GITHUB_ENV
           sleep 5
-          xdpyinfo -display :99 > /dev/null 2>&1 || (echo "⚠️ Xvfb failed to start" && exit 1)
+          xdpyinfo -display :99 > /dev/null 2>&1 || echo "⚠️ Xvfb reported issues"
 
       - name: Start VNC & Wait for User Setup (Debug Mode)
         if: ${{ github.event.inputs.manual_login == 'true' || github.event.inputs.debug_mode == 'true' }}
         env:
           V_URL: ${{ secrets.V_URL }}
         run: |
+          set +e
           # --- Phase 1: Robust SSH Server Setup ---
           sudo service ssh restart
           echo "runner:runner" | sudo chpasswd
@@ -145,13 +147,15 @@ jobs:
                 RAW_SIGNAL=$(cat /tmp/run_v_process)
                 rm /tmp/run_v_process
                 PROJECT_NAME="${RAW_SIGNAL:-${{ github.event.inputs.project }}}"
-                [ -z "$PROJECT_NAME" ] && PROJECT_NAME="latest"
                 
-                LOCAL_PROJECT_DIR="$(pwd)/projects/$PROJECT_NAME"
-                mkdir -p "$LOCAL_PROJECT_DIR/0.sources"
-                
-                .venv/bin/python v_lib/v_process/download_meta.py "$PROJECT_NAME" --out "$LOCAL_PROJECT_DIR/0.sources"
-                .venv/bin/python v_lib/v_process/runner.py --project "$LOCAL_PROJECT_DIR" 2>&1 | tee -a logs/v_process.log
+                if [ -n "$PROJECT_NAME" ]; then
+                  echo "🎯 Targeted Project: $PROJECT_NAME"
+                  mkdir -p "$(pwd)/projects"
+                  .venv/bin/python v_lib/v_process/runner.py --project "$PROJECT_NAME" 2>&1 | tee -a logs/v_process.log || echo "⚠️ Automation failed for $PROJECT_NAME"
+                else
+                  echo "🔍 No project specified. Running auto-discovery..."
+                  .venv/bin/python v_lib/v_process/runner.py 2>&1 | tee -a logs/v_process.log || echo "⚠️ Automation failed"
+                fi
             fi
             
             if [ -f /tmp/load_chrome ]; then
@@ -168,38 +172,38 @@ jobs:
         env:
           V_URL: ${{ secrets.V_URL }}
         run: |
+          set +e
           source .venv/bin/activate
           export DISPLAY=:99
           mkdir -p logs
           google-chrome --no-sandbox --disable-dev-shm-usage --disable-gpu --remote-debugging-port=9222 --disable-session-crashed-bubble --no-first-run --no-default-browser-check --disable-infobars --window-size=2000,1550 --window-position=0,0 --user-data-dir="$(pwd)/.browser-session" "${V_URL:-https://realtime.pixverse.ai/generate/}" > logs/chrome_startup.log 2>&1 &
-          sleep 10
+          sleep 15
           
           PROJECT_NAME="${{ github.event.inputs.project }}"
-          if [ -z "$PROJECT_NAME" ]; then
-            PROJECT_NAME=$(.venv/bin/python v_lib/v_process/find_missing.py)
-            if [ -z "$PROJECT_NAME" ] || [[ "$PROJECT_NAME" == *"Check"* ]]; then exit 0; fi
+          if [ -n "$PROJECT_NAME" ]; then
+            echo "🎯 Targeted Project: $PROJECT_NAME"
+            .venv/bin/python v_lib/v_process/runner.py --project "$PROJECT_NAME" 2>&1 | tee -a logs/v_process.log || echo "⚠️ Automation failed for $PROJECT_NAME"
+          else
+            echo "🔍 No project specified. Running auto-discovery via Google Drive..."
+            .venv/bin/python v_lib/v_process/runner.py 2>&1 | tee -a logs/v_process.log || echo "⚠️ Automation failed"
           fi
-          
-          LOCAL_PROJECT_DIR="$(pwd)/projects/$PROJECT_NAME"
-          mkdir -p "$LOCAL_PROJECT_DIR/0.sources"
-          
-          .venv/bin/python v_lib/v_process/download_meta.py "$PROJECT_NAME" --out "$LOCAL_PROJECT_DIR/0.sources"
-          .venv/bin/python v_lib/v_process/runner.py --project "$LOCAL_PROJECT_DIR" 2>&1 | tee -a logs/v_process.log
 
       - name: Upload Results to Google Drive
         if: always()
         run: |
+          set +e
           for dir in $(find . -type d -name "7.downloads"); do
             count=$(ls -1 "$dir"/*.mp4 2>/dev/null | wc -l || echo 0)
             if [ $count -gt 0 ]; then
                parent_name="V_Results_$(date +%Y%m%d)"
-               .venv/bin/python v_lib/v_process/upload_results.py "$dir" --parent-name "$parent_name"
+               .venv/bin/python v_lib/v_process/upload_results.py "$dir" --parent-name "$parent_name" || echo "⚠️ Upload failed for $dir"
             fi
           done
 
       - name: Commit and Push State Changes
         if: always()
         run: |
+          set +e
           git add v_lib/v_process/automation_state.json v_lib/v_process/ui_config.json
           git commit -m "Update state [skip ci]" || echo "No changes"
           git push
