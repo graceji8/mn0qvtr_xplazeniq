@@ -177,6 +177,35 @@ def get_drive_folder_id(service, folder_name: str, parent_id: str = None) -> str
     files   = results.get("files", [])
     return files[0]["id"] if files else None
 
+def resolve_drive_project_id(service, project_name: str, parent_name: str = "2026-03") -> str:
+    """Find a Drive project ID by traversing the PARENT/YEAR/MONTH structure or global search."""
+    log(f"🔍 Resolving Drive ID for: {project_name} (parent: {parent_name})")
+    
+    # 1. Try global search first (fastest if unique)
+    project_id = get_drive_folder_id(service, project_name)
+    if project_id:
+        # Verify it has a 0.sources folder to avoid false positives with same-name generic folders
+        if get_drive_folder_id(service, "0.sources", project_id):
+            return project_id
+    
+    # 2. Try structured path resolution if global search failed or was incomplete
+    # project_name format: YYYY-MM-DD-project
+    match = re.search(r"(\d{4})-(\d{2})-\d{2}-project", project_name)
+    if match:
+        year, month = match.group(1), match.group(2)
+        log(f"   📂 Traversing path structure: {parent_name} -> {year} -> {month} -> {project_name}")
+        
+        parent_id = get_drive_folder_id(service, parent_name)
+        if parent_id:
+            year_id = get_drive_folder_id(service, year, parent_id)
+            if year_id:
+                month_id = get_drive_folder_id(service, month, year_id)
+                if month_id:
+                    project_id = get_drive_folder_id(service, project_name, month_id)
+                    if project_id:
+                        return project_id
+    return None
+
 def get_drive_file_id(service, file_name: str, parent_id: str = None) -> str:
     query = f"name = '{file_name}' and trashed = false"
     if parent_id: query += f" and '{parent_id}' in parents"
@@ -185,8 +214,9 @@ def get_drive_file_id(service, file_name: str, parent_id: str = None) -> str:
     return files[0]["id"] if files else None
 
 def download_project_sources_from_drive(service, project_name: str, local_sources_dir: Path):
-    project_id = get_drive_folder_id(service, project_name)
-    if not project_id: raise FileNotFoundError(f"Project '{project_name}' not found on Drive.")
+    log(f"🔍 Searching Drive for project: {project_name}")
+    project_id = resolve_drive_project_id(service, project_name)
+    if not project_id: raise FileNotFoundError(f"Project folder '{project_name}' not found on Drive.")
     sources_id = get_drive_folder_id(service, "0.sources", project_id)
     if not sources_id: raise FileNotFoundError(f"'0.sources' not found.")
 
@@ -213,7 +243,9 @@ def download_project_sources_from_drive(service, project_name: str, local_source
             while not done: status, done = downloader.next_chunk()
 
 def check_drive_project_needs_video(service, project_name: str) -> bool:
-    project_id = get_drive_folder_id(service, project_name)
+    """Check if project on Drive lacks an .mp4 in 0.sources and is not already processing."""
+    log(f"🔍 Checking Drive completion for: {project_name}")
+    project_id = resolve_drive_project_id(service, project_name)
     if not project_id: return False
     sources_id = get_drive_folder_id(service, "0.sources", project_id)
     if not sources_id: return True
@@ -387,7 +419,26 @@ def main():
         try: service = get_drive_service()
         except: pass
         project_dir = get_project_dir(service)
-    else: project_dir = Path(args.project)
+    else:
+        project_dir = Path(args.project)
+        # Attempt to resolve project path if not absolute
+        if not project_dir.is_absolute():
+            # Priority 1: Check projects/ subfolder
+            test_dir = root_dir / "projects" / args.project
+            if test_dir.exists():
+                project_dir = test_dir
+            else:
+                # Priority 2: Check dated structure
+                parts = str(args.project).split("-")
+                if len(parts) >= 2 and parts[0].isdigit():
+                    # root_dir / YEAR / MONTH / project
+                    test_dir = root_dir / parts[0] / parts[1] / args.project
+                    if test_dir.exists():
+                        project_dir = test_dir
+                
+                # Priority 3: Fallback to CWD
+                if not project_dir.exists():
+                    project_dir = Path(os.getcwd()) / args.project
 
     if project_dir:
         sources_dir = project_dir / "0.sources"
