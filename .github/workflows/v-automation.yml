@@ -1,0 +1,221 @@
+name: V-Automation
+
+on:
+  workflow_dispatch:
+    inputs:
+      project:
+        description: 'Specific project folder or date'
+        required: false
+        type: string
+      manual_login:
+        description: 'Wait for manual login (tmate)'
+        required: false
+        default: false
+        type: boolean
+      debug_mode:
+        description: 'Enable VNC for monitoring'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  run-v-process:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb python3-tk python3-dev scrot gnome-screenshot x11vnc novnc websockify
+          sudo apt-get install -y tesseract-ocr libtesseract-dev openssh-server libgbm1 ffmpeg
+          wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+          sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list'
+          sudo apt-get update
+          sudo apt-get install -y google-chrome-stable
+          
+      - name: Cache Python virtual environment
+        uses: actions/cache@v3
+        id: cache-venv
+        with:
+          path: .venv
+          key: ${{ runner.os }}-venv-v-process
+          
+      - name: Install Python dependencies
+        if: steps.cache-venv.outputs.cache-hit != 'true'
+        run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          python -m pip install --upgrade pip
+          pip install pyautogui mss numpy opencv-python google-api-python-client google-auth-oauthlib google-auth-httplib2 pyperclip
+          echo "$(pwd)/.venv/bin" >> $GITHUB_PATH
+          echo "PYTHONPATH=$(pwd)" >> $GITHUB_ENV
+
+      - name: Activate Virtual Environment
+        run: |
+          echo "$(pwd)/.venv/bin" >> $GITHUB_PATH
+          
+      - name: Create session directories
+        run: |
+          mkdir -p .browser-session
+          
+      - name: Restore browser session
+        uses: actions/cache/restore@v3
+        with:
+          path: .browser-session
+          key: v-browser-session-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            v-browser-session-${{ runner.os }}-
+            
+      - name: Create Google Credentials
+        run: |
+          if [ -n "${{ secrets.GOOGLE_DRIVE_CREDENTIALS }}" ]; then
+            echo "${{ secrets.GOOGLE_DRIVE_CREDENTIALS }}" > credentials.json
+          fi
+          if [ -n "${{ secrets.GOOGLE_DRIVE_TOKEN }}" ]; then
+            echo "${{ secrets.GOOGLE_DRIVE_TOKEN }}" | base64 --decode > token.pickle
+          fi
+
+      - name: Setup Virtual Display
+        run: |
+          touch ~/.Xauthority
+          Xvfb :99 -screen 0 2650x1550x24 &
+          echo "DISPLAY=:99" >> $GITHUB_ENV
+          echo "XAUTHORITY=$HOME/.Xauthority" >> $GITHUB_ENV
+          sleep 5
+          xdpyinfo -display :99 > /dev/null 2>&1 || (echo "⚠️ Xvfb failed to start" && exit 1)
+
+      - name: Start VNC & Wait for User Setup (Debug Mode)
+        if: ${{ github.event.inputs.manual_login == 'true' || github.event.inputs.debug_mode == 'true' }}
+        env:
+          V_URL: ${{ secrets.V_URL }}
+        run: |
+          # --- Phase 1: Robust SSH Server Setup ---
+          sudo service ssh restart
+          echo "runner:runner" | sudo chpasswd
+
+          # --- Phase 2: Start VNC & Browser ---
+          x11vnc -display :99 -forever -shared -bg -nopw
+          websockify --web /usr/share/novnc 6080 localhost:5900 &
+          
+          mkdir -p logs
+          export DISPLAY=:99
+          google-chrome --no-sandbox --disable-dev-shm-usage --disable-gpu --remote-debugging-port=9222 --disable-session-crashed-bubble --no-first-run --no-default-browser-check --disable-infobars --window-size=2000,1550 --window-position=0,0 --user-data-dir="$(pwd)/.browser-session" "${V_URL:-https://realtime.pixverse.ai/generate/}" > logs/chrome_startup.log 2>&1 &
+          .venv/bin/python v_lib/v_process/controls.py &
+          
+          # Phase 3: Start Tunnels
+          sudo apt-get install -y tmate
+          tmate -S /tmp/tmate.sock new-session -d
+          tmate -S /tmp/tmate.sock wait tmate-ready
+          
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared-linux-amd64.deb
+          
+          cloudflared tunnel --url http://127.0.0.1:6080 > logs/v_cf.log 2>&1 &
+          
+          echo "Waiting for Cloudflared URL..."
+          sleep 10
+          V_VNC_URL=$(grep -a -oE "https://[a-zA-Z0-9-]+\.trycloudflare\.com" logs/v_cf.log | head -1)
+          
+          echo "=========================================================="
+          echo "✅ Control URL: ${V_VNC_URL}/vnc.html"
+          echo "=========================================================="
+          tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}'
+          echo "=========================================================="
+
+          # Main Event Loop
+          while true; do
+            if [ -f /tmp/save ]; then break; fi
+            
+            if [ -f /tmp/run_v_process ]; then
+                RAW_SIGNAL=$(cat /tmp/run_v_process)
+                rm /tmp/run_v_process
+                PROJECT_NAME="${RAW_SIGNAL:-${{ github.event.inputs.project }}}"
+                [ -z "$PROJECT_NAME" ] && PROJECT_NAME="latest"
+                
+                LOCAL_PROJECT_DIR="$(pwd)/projects/$PROJECT_NAME"
+                mkdir -p "$LOCAL_PROJECT_DIR/0.sources"
+                
+                .venv/bin/python v_lib/v_process/download_meta.py "$PROJECT_NAME" --out "$LOCAL_PROJECT_DIR/0.sources"
+                .venv/bin/python v_lib/v_process/runner.py --project "$LOCAL_PROJECT_DIR" 2>&1 | tee -a logs/v_process.log
+            fi
+            
+            if [ -f /tmp/load_chrome ]; then
+                pkill google-chrome || true
+                google-chrome --no-sandbox --disable-dev-shm-usage --disable-gpu --remote-debugging-port=9222 --disable-session-crashed-bubble --no-first-run --no-default-browser-check --disable-infobars --window-size=2000,1550 --window-position=0,0 --user-data-dir="$(pwd)/.browser-session" "${V_URL:-https://realtime.pixverse.ai/generate/}" > logs/chrome_startup.log 2>&1 &
+                rm /tmp/load_chrome
+            fi
+            
+            sleep 2
+          done
+
+      - name: Run V-Process capture (Auto-Run Mode)
+        if: ${{ github.event.inputs.manual_login != 'true' && github.event.inputs.debug_mode != 'true' }}
+        env:
+          V_URL: ${{ secrets.V_URL }}
+        run: |
+          source .venv/bin/activate
+          export DISPLAY=:99
+          mkdir -p logs
+          google-chrome --no-sandbox --disable-dev-shm-usage --disable-gpu --remote-debugging-port=9222 --disable-session-crashed-bubble --no-first-run --no-default-browser-check --disable-infobars --window-size=2000,1550 --window-position=0,0 --user-data-dir="$(pwd)/.browser-session" "${V_URL:-https://realtime.pixverse.ai/generate/}" > logs/chrome_startup.log 2>&1 &
+          sleep 10
+          
+          PROJECT_NAME="${{ github.event.inputs.project }}"
+          if [ -z "$PROJECT_NAME" ]; then
+            PROJECT_NAME=$(.venv/bin/python v_lib/v_process/find_missing.py)
+            if [ -z "$PROJECT_NAME" ] || [[ "$PROJECT_NAME" == *"Check"* ]]; then exit 0; fi
+          fi
+          
+          LOCAL_PROJECT_DIR="$(pwd)/projects/$PROJECT_NAME"
+          mkdir -p "$LOCAL_PROJECT_DIR/0.sources"
+          
+          .venv/bin/python v_lib/v_process/download_meta.py "$PROJECT_NAME" --out "$LOCAL_PROJECT_DIR/0.sources"
+          .venv/bin/python v_lib/v_process/runner.py --project "$LOCAL_PROJECT_DIR" 2>&1 | tee -a logs/v_process.log
+
+      - name: Upload Results to Google Drive
+        if: always()
+        run: |
+          for dir in $(find . -type d -name "7.downloads"); do
+            count=$(ls -1 "$dir"/*.mp4 2>/dev/null | wc -l || echo 0)
+            if [ $count -gt 0 ]; then
+               parent_name="V_Results_$(date +%Y%m%d)"
+               .venv/bin/python v_lib/v_process/upload_results.py "$dir" --parent-name "$parent_name"
+            fi
+          done
+
+      - name: Commit and Push State Changes
+        if: always()
+        run: |
+          git add v_lib/v_process/automation_state.json v_lib/v_process/ui_config.json
+          git commit -m "Update state [skip ci]" || echo "No changes"
+          git push
+
+      - name: Save browser session
+        if: always()
+        uses: actions/cache/save@v3
+        with:
+          path: .browser-session
+          key: v-browser-session-${{ runner.os }}-${{ github.run_id }}
+          
+      - name: Upload Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v-process-artifacts-${{ github.run_id }}
+          path: |
+            logs/
+            **/7.downloads/*.mp4

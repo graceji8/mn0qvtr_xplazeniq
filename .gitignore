@@ -1,0 +1,13 @@
+.venv/
+.browser-session/
+.vscode-session/
+logs/
+credentials.json
+token.pickle
+__pycache__/
+*.mp4
+*.mkv
+*.avi
+projects/
+*.png
+!v_lib/v_process/realtime/*.png
