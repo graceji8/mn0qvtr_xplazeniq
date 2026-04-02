@@ -119,7 +119,7 @@ jobs:
           google-chrome --no-sandbox --disable-dev-shm-usage --disable-gpu --remote-debugging-port=9222 --disable-session-crashed-bubble --no-first-run --no-default-browser-check --disable-infobars --window-size=2000,1550 --window-position=0,0 --user-data-dir="$(pwd)/.browser-session" "${V_URL:-https://realtime.pixverse.ai/generate/}" > logs/chrome_startup.log 2>&1 &
           .venv/bin/python v_lib/v_process/controls.py &
           
-          # Phase 3: Start Tunnels
+          # Phase 3: Start Tunnels (Dual: VNC + SSH)
           sudo apt-get install -y tmate
           tmate -S /tmp/tmate.sock new-session -d
           tmate -S /tmp/tmate.sock wait tmate-ready
@@ -127,25 +127,31 @@ jobs:
           wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared-linux-amd64.deb
           
-          cloudflared tunnel --url http://127.0.0.1:6080 > logs/v_cf.log 2>&1 &
+          # Tunnel 1: NoVNC Browser (HTTP)
+          cloudflared tunnel --url http://127.0.0.1:6080 > logs/v_cf_vnc.log 2>&1 &
+          # Tunnel 2: Dedicated SSH (SSH)
+          cloudflared tunnel --url ssh://localhost:22 > logs/v_cf_ssh.log 2>&1 &
           
-          echo "Waiting for Cloudflared URL..."
-          sleep 10
-          V_VNC_URL=$(grep -a -oE "https://[a-zA-Z0-9-]+\.trycloudflare\.com" logs/v_cf.log | head -1)
+          echo "Waiting for Cloudflared URLs..."
+          sleep 12
+          V_VNC_URL=$(grep -a -oE "https://[a-zA-Z0-9-]+\.trycloudflare\.com" logs/v_cf_vnc.log | head -1)
+          V_SSH_URL=$(grep -a -oE "https://[a-zA-Z0-9-]+\.trycloudflare\.com" logs/v_cf_ssh.log | head -1)
           
           echo "=========================================================="
-          echo "✅ Control URL: ${V_VNC_URL}/vnc.html"
+          echo "🌐 CONTROL URL (VNC Browser):"
+          echo "   ${V_VNC_URL}/vnc.html"
           echo "=========================================================="
-          echo "🚀 SSH Connection Config (Cloudflared)"
+          echo "🚀 SSH Connection Config (VS Code/SSH):"
           echo "=========================================================="
-          echo "Copy this to your ~/.ssh/config:"
+          echo "Copy this to your local ~/.ssh/config:"
           echo "Host runner"
-          echo "    HostName ${V_VNC_URL#https://}"
+          echo "    # URL: ${V_SSH_URL}"
+          echo "    HostName ${V_SSH_URL#https://}"
           echo "    User runner"
           echo "    Port 22"
           echo "    ProxyCommand cloudflared access ssh --hostname %h"
           echo "=========================================================="
-          echo "Password for user 'runner' is: runner"
+          echo "🔑 Password for user 'runner' is: runner"
           echo "=========================================================="
 
           # Main Event Loop
