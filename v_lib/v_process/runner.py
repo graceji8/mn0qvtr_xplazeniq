@@ -546,6 +546,9 @@ def main():
                 log("❌ No project specified or found.")
                 return
 
+        # ── 2. Mark as processing locally ──
+        mark_project_processing(project_dir)
+
         sources_dir = project_dir / "0.sources"
         prompts_file = sources_dir / "lyrics_with_prompts.md"
         
@@ -951,6 +954,18 @@ def main():
                 if args.no_local and gdrive_url:
                     os.remove(out_video)
                     log("🗑️  Local copy deleted (--no-local).")
+
+                # ── 6c. Upload Status File ──
+                status_path = project_dir / "0.sources" / STATUS_FILE_NAME
+                if status_path.exists():
+                    log(f"☁️  Uploading {STATUS_FILE_NAME} to track completion...")
+                    upload_to_gdrive(
+                        local_path         = str(status_path),
+                        folder_name        = folder_path,
+                        parent_folder_name = parent,
+                        drive_filename     = STATUS_FILE_NAME,
+                        make_public        = args.public
+                    )
             except Exception as e:
                 log(f"⚠️  Drive upload failed: {e}")
         elif not getattr(args, "no_gdrive", False):
