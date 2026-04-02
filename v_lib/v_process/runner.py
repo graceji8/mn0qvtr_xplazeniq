@@ -485,16 +485,22 @@ def main():
     parser.add_argument("--start-delay", type=float, default=10.0)
     parser.add_argument("--cut-start", type=float, default=6.0)
     parser.add_argument("--cut-end", type=float, default=6.0)
-    parser.add_argument("--upload", "-u", action="store_true")
+    parser.add_argument("--upload-only", "-u", action="store_true", help="Skip capture and transcode, just upload the latest final video.")
     parser.add_argument("--convert", "-c", action="store_true")
     parser.add_argument("--loop", "-l", action="store_true", help="Keep running and wait for projects")
-    parser.add_argument("--no-gdrive", action="store_true")
+    parser.add_argument("--input-raw", "-i", type=str)
+    parser.add_argument("--gdrive-folder", type=str, default=None)
+    parser.add_argument("--gdrive-parent", type=str, default=None)
+    parser.add_argument("--gdrive-name",   type=str, default=None)
+    parser.add_argument("--public",        action="store_true", default=True)
+    parser.add_argument("--no-local",      action="store_true")
+    parser.add_argument("--no-gdrive",     action="store_true")
     args = parser.parse_args()
 
     print("\n🚀 V-Process Runner Starting...")
     
     # Ensure Chrome is ready
-    if not args.upload and not args.convert:
+    if not args.upload_only and not args.convert:
         ensure_chrome_running()
         
     config = load_config()
@@ -543,20 +549,22 @@ def main():
         sources_dir = project_dir / "0.sources"
         prompts_file = sources_dir / "lyrics_with_prompts.md"
         
-        log(f"📂 Syncing sources for '{project_dir.name}' from Drive...")
-        try:
-            if not service: service = get_drive_service()
-            sources_dir.mkdir(parents=True, exist_ok=True)
-            download_project_sources_from_drive(service, project_dir.name, sources_dir)
-        except Exception as e:
-            log(f"⚠️ Failed to fetch sources from Drive for {project_dir.name}: {e}")
+        # ── 2.5. Sync sources from Drive (only if capturing) ──
+        if not args.upload_only and not args.convert:
+            log(f"📂 Syncing sources for '{project_dir.name}' from Drive...")
+            try:
+                if not service: service = get_drive_service()
+                sources_dir.mkdir(parents=True, exist_ok=True)
+                download_project_sources_from_drive(service, project_dir.name, sources_dir)
+            except Exception as e:
+                log(f"⚠️ Failed to fetch sources from Drive for {project_dir.name}: {e}")
 
-        if not prompts_file.exists():
-            log(f"🛑 Missing required sources! Pausing runner to let you debug...")
-            log(f"👉 Expected to find: {prompts_file}")
-            while not prompts_file.exists():
-                time.sleep(5)
-            log("✅ File detected! Resuming...")
+            if not prompts_file.exists():
+                log(f"🛑 Missing required sources! Pausing runner to let you debug...")
+                log(f"👉 Expected to find: {prompts_file}")
+                while not prompts_file.exists():
+                    time.sleep(5)
+                log("✅ File detected! Resuming...")
 
         prompts = parse_veo_prompts(project_dir / "0.sources" / "lyrics_with_prompts.md")
         if not prompts:
@@ -573,9 +581,9 @@ def main():
         out_video = str(project_dir / "0.sources" / f"pixverse_{ts}.mp4")
 
         # ── 3.5. Determine Action ────────────────────────────────────────────────
-        do_capture   = not args.upload and not args.convert
-        do_transcode = not args.upload
-        do_cleanup   = not args.upload and not args.convert
+        do_capture   = not args.upload_only and not args.convert
+        do_transcode = not args.upload_only
+        do_cleanup   = not args.upload_only and not args.convert
         total_frames = 0
 
         if do_capture:
