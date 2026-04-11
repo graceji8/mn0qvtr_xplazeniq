@@ -1469,28 +1469,28 @@ def main():
                         sources_dir  = get_sources_dir(project_dir)
 
 
-                        # 🔊 Ensure audio files exist locally before transcoding
-                        if not list(sources_dir.glob("*.mp3")):
-                            log("   ⚠️ Audio files (.mp3) missing locally. Attempting to fetch from Drive...")
-                            try:
-                                if not service: service = get_drive_service()
-                                download_project_sources_from_drive(service, project_dir.name, sources_dir)
-                            except Exception as e:
-                                log(f"   ⚠️ Could not download audio from Drive: {e}")
+                        # # 🔊 Ensure audio files exist locally before transcoding
+                        # if not list(sources_dir.glob("*.mp3")):
+                        #     log("   ⚠️ Audio files (.mp3) missing locally. Attempting to fetch from Drive...")
+                        #     try:
+                        #         if not service: service = get_drive_service()
+                        #         download_project_sources_from_drive(service, project_dir.name, sources_dir)
+                        #     except Exception as e:
+                        #         log(f"   ⚠️ Could not download audio from Drive: {e}")
 
-                        mp3_0        = sources_dir / "part_000.mp3"
-                        mp3_9        = sources_dir / "part_000 (9).mp3"
-                        combined_mp3 = sources_dir / f"{project_dir.name}_combined.mp3"
+                        # mp3_0        = sources_dir / "part_000.mp3"
+                        # mp3_9        = sources_dir / "part_000 (9).mp3"
+                        combined_mp3 = sources_dir / f"combined_audio.mp3"
 
                         if combined_mp3.exists():
                             log(f"   🔹 Using existing combined audio: {combined_mp3.name}")
-                        elif mp3_0.exists() and mp3_9.exists():
-                            log("   ➕ Combining part_000.mp3 + part_000 (9).mp3...")
-                            subprocess.run([
-                                "ffmpeg", "-y", "-i", str(mp3_0), "-i", str(mp3_9),
-                                "-filter_complex", "[0:a][1:a]concat=n=2:v=0:a=1[a]",
-                                "-map", "[a]", str(combined_mp3)
-                            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        # elif mp3_0.exists() and mp3_9.exists():
+                        #     log("   ➕ Combining part_000.mp3 + part_000 (9).mp3...")
+                        #     subprocess.run([
+                        #         "ffmpeg", "-y", "-i", str(mp3_0), "-i", str(mp3_9),
+                        #         "-filter_complex", "[0:a][1:a]concat=n=2:v=0:a=1[a]",
+                        #         "-map", "[a]", str(combined_mp3)
+                        #     ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                         else:
                             # Fallback: look for ANY mp3 if the standard naming fails
                             audio_files  = [f for f in sources_dir.glob("*.mp3") if not f.name.endswith("_combined.mp3")]
