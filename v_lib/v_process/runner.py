@@ -1310,11 +1310,7 @@ def main():
                     )
                     log(f"🎬 FINAL VIDEO URL: {gdrive_url}")
                     
-                    summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
-                    if summary_file and os.path.exists(summary_file):
-                        with open(summary_file, "a", encoding="utf-8") as sf:
-                            sf.write("## 🎬 Final Processed Video\n")
-                            sf.write(f"**[Click here to view the final generated video on Google Drive]({gdrive_url})**\n\n")
+
 
                 
                 # ── 6b. Upload 7.downloads folder contents ──

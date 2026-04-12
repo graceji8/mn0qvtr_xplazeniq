@@ -511,11 +511,6 @@ def sync_project_to_drive(project_dir: Path, args, out_video: str = None):
             )
             log(f"🎬 FINAL VIDEO URL: {gdrive_url}")
             
-            summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
-            if summary_file and os.path.exists(summary_file):
-                with open(summary_file, "a", encoding="utf-8") as sf:
-                    sf.write("## 🎬 Final Processed Video\n")
-                    sf.write(f"**[Click here to view the final generated video on Google Drive]({gdrive_url})**\n\n")
 
         if downloads_dir.exists():
             log(f"📂 Syncing {downloads_dir.name} contents...")
@@ -1323,9 +1318,7 @@ def main():
                     stop_event.set()
                     recorder_thread.join()
                     total_frames = stats.get("total_frames", 0)
-                    if skip_current_project:
-                        log("🛑 skip_current_project is set — exiting runner entirely.")
-                        sys.exit(1)
+
 
                 if skip_current_project:
                     capture_done = True
