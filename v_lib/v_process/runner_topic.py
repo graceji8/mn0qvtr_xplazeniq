@@ -137,7 +137,9 @@ def save_debug_screenshot(name="debug"):
         import time
         log_dir = root_dir / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
-        filename_str = f"{name}_{int(time.time())}.png"
+        repo = os.environ.get("GITHUB_REPOSITORY", "").replace("/", "_")
+        prefix = f"{repo}_" if repo else ""
+        filename_str = f"{prefix}{name}_{int(time.time())}.png"
         filepath = log_dir / filename_str
         with mss.mss() as sct:
             sct.shot(mon=-1, output=str(filepath))
