@@ -137,7 +137,9 @@ def save_debug_screenshot(name="debug"):
         import time
         log_dir = root_dir / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
-        filename_str = f"{name}_{int(time.time())}.png"
+        repo = os.environ.get("GITHUB_REPOSITORY", "").replace("/", "_")
+        prefix = f"{repo}_" if repo else ""
+        filename_str = f"{prefix}{name}_{int(time.time())}.png"
         filepath = log_dir / filename_str
         with mss.mss() as sct:
             sct.shot(mon=-1, output=str(filepath))
@@ -302,7 +304,7 @@ def get_project_drive_path(project_dir: Path):
                 relevant_parts = parts[news_idx:]
                 last = relevant_parts[-1]
                 if re.match(r'^\d{4}-\d{2}-\d{2}$', last):
-                    raise ValueError(f"project_dir ends at date folder, not a News_XX subfolder: {project_dir}")
+                    raise ValueError(f"project_dir ends at date folder, not a project subfolder: {project_dir}")
                 return "/".join(relevant_parts)
             except ValueError:
                 raise
@@ -465,9 +467,10 @@ def sync_project_to_drive(project_dir: Path, args, out_video: str = None):
     if getattr(args, "no_gdrive", False):
         return
 
+    # FIX: updated guard to match both old "News_XX" and new "0011-XX" style folder names
     if re.match(r'^\d{4}-\d{2}-\d{2}$', project_dir.name) and "news" in project_dir.parts:
-        log(f"⚠️  sync_project_to_drive: project_dir appears to be a date folder, not a News_XX project: {project_dir}")
-        log(f"   Please pass the News_XX subfolder (e.g. news/2026/04/2026-04-09/News_01)")
+        log(f"⚠️  sync_project_to_drive: project_dir appears to be a date folder, not a project subfolder: {project_dir}")
+        log(f"   Please pass the project subfolder (e.g. news/2026/04/2026-04-09/0011-01)")
         return
 
     log(f"☁️  Starting Google Drive sync for: {project_dir.name}...")
@@ -585,16 +588,18 @@ def sync_all_news_local(args):
     for year_dir in sorted(news_root.glob("202*")):
         for month_dir in sorted(year_dir.glob("[01][0-9]")):
             for date_dir in sorted(month_dir.glob("202*")):
-                for project_dir in sorted(date_dir.glob("[nN]ews_*")):
-                    if project_dir.is_dir():
-                        videos = sorted(list(project_dir.glob("veo_*.mp4")), key=os.path.getmtime, reverse=True)
-                        if videos:
-                            log(f"🔎 Found processed project: {project_dir.name}")
-                            sync_project_to_drive(project_dir, args, out_video=str(videos[0]))
-                            count += 1
-                        else:
-                            log(f"   (Skipping {project_dir.name}: no video)")
+                for project_dir in sorted(date_dir.iterdir()):
+                    if not project_dir.is_dir():
+                        continue
+                    videos = sorted(list(project_dir.glob("veo_*.mp4")), key=os.path.getmtime, reverse=True)
+                    if videos:
+                        log(f"🔎 Found processed project: {project_dir.name}")
+                        sync_project_to_drive(project_dir, args, out_video=str(videos[0]))
+                        count += 1
+                    else:
+                        log(f"   (Skipping {project_dir.name}: no video)")
     log(f"✅ Bulk news sync finished. Projects processed: {count}")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -733,22 +738,23 @@ def get_project_dir(service=None, fallback=True):
         target_date = datetime.now(ZoneInfo('America/Los_Angeles'))
         date_dir = news_root / target_date.strftime("%Y") / target_date.strftime("%m") / target_date.strftime("%Y-%m-%d")
         if date_dir.exists():
-            potential_folders = list(date_dir.glob("News_*")) + list(date_dir.glob("news_*"))
-            # Sort descending so newest/highest-numbered project is tried first
-            project_dirs = sorted(list(set(potential_folders)), reverse=True)
+            # Loop all subfolders under the date directory
+            project_dirs = sorted(
+                [d for d in date_dir.iterdir() if d.is_dir()],
+                key=lambda d: d.name, reverse=True
+            )
             for project_dir in project_dirs:
-                if project_dir.is_dir():
-                    status_file = project_dir / STATUS_FILE_NAME
-                    if status_file.exists():
-                        if time.time() - status_file.stat().st_mtime > 30 * 60:
-                            log(f"   🧹 Found stale status file at {project_dir.name}, removing...")
-                            try: status_file.unlink()
-                            except: pass
-                        else:
-                            continue
-                    if not list(project_dir.glob("veo_*.mp4")):
-                        log(f"✨ Found pending news project: {project_dir.name} (in {target_date.strftime('%Y-%m-%d')})")
-                        return project_dir
+                status_file = project_dir / STATUS_FILE_NAME
+                if status_file.exists():
+                    if time.time() - status_file.stat().st_mtime > 30 * 60:
+                        log(f"   🧹 Found stale status file at {project_dir.name}, removing...")
+                        try: status_file.unlink()
+                        except: pass
+                    else:
+                        continue
+                if not list(project_dir.glob("veo_*.mp4")):
+                    log(f"✨ Found pending news project: {project_dir.name} (in {target_date.strftime('%Y-%m-%d')})")
+                    return project_dir
     else:
         log("   ⚠️ News root folder not found.")
 
@@ -770,13 +776,14 @@ def get_project_dir(service=None, fallback=True):
                 if month_id:
                     date_id = get_drive_folder_id(service, date_str, month_id)
                     if date_id:
+                        # Fetch all subfolders under the date folder; no name filtering
                         results = service.files().list(
-                            q=f"'{date_id}' in parents and (name contains 'News_' or name contains 'news_') and mimeType = 'application/vnd.google-apps.folder' and trashed = false",
+                            q=f"'{date_id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false",
                             fields="files(name)"
                         ).execute()
                         news_folders = results.get('files', [])
                         if news_folders:
-                            log(f"   🔎 Found {len(news_folders)} news folders in {date_str}: {[f['name'] for f in news_folders]}")
+                            log(f"   🔎 Found {len(news_folders)} project folders in {date_str}: {[f['name'] for f in news_folders]}")
                             # Sort descending so newest/highest-numbered project is tried first
                             for f in sorted(news_folders, key=lambda x: x['name'], reverse=True):
                                 project_name = f"news/{year_str}/{month_str}/{date_str}/{f['name']}"
@@ -922,18 +929,16 @@ def main():
                         if test_dir.exists(): project_dir = test_dir
                     if not project_dir.exists(): project_dir = Path(os.getcwd()) / args.project
 
-        # ── Expand bare date folders to their News_XX subfolders ──────────────
         if (project_dir and project_dir.is_dir()
                 and re.match(r'^\d{4}-\d{2}-\d{2}$', project_dir.name)
                 and "news" in project_dir.parts):
-            subfolders = sorted([d for d in project_dir.iterdir()
-                                 if d.is_dir() and re.match(r'(?i)^news_\d+$', d.name)])
+            subfolders = sorted([d for d in project_dir.iterdir() if d.is_dir()])
             if subfolders:
-                log(f"📂 Expanding date folder to first pending News_XX subfolder...")
+                log(f"📂 Expanding date folder to first pending project subfolder...")
                 project_dir = subfolders[0]
                 log(f"   → {project_dir}")
             else:
-                log(f"❌ Date folder {project_dir} has no News_XX subfolders. Skipping.")
+                log(f"❌ Date folder {project_dir} has no subfolders. Skipping.")
                 args.project = None
                 continue
 
@@ -1130,9 +1135,8 @@ def main():
                     time.sleep(3)
 
             if not submit_clicked:
-                log("❌ Submit button not found after 3 attempts. Skipping project.")
-                args.project = None
-                continue
+                log("❌ Submit button not found after 3 attempts. Exiting runner entirely.")
+                sys.exit(1)
 
             time.sleep(6)
 
@@ -1163,9 +1167,8 @@ def main():
                         finder=finder, retry_tpl=submit_tpl, scales=search_scales
                     )
                     if vb_result == "submit_loop":
-                        log("❌ Submit button kept reappearing. Skipping project.")
-                        skip_current_project = True
-                        raise ValueError("submit_loop")
+                        log("❌ Submit button kept reappearing after re-click. Exiting runner entirely.")
+                        sys.exit(1)
                     elif not vb_result:
                         raise ValueError("visual_timeout")
                         
@@ -1295,6 +1298,9 @@ def main():
                     stop_event.set()
                     recorder_thread.join()
                     total_frames = stats.get("total_frames", 0)
+                    if skip_current_project:
+                        log("🛑 skip_current_project is set — exiting runner entirely.")
+                        sys.exit(1)
 
                 if skip_current_project:
                     capture_done = True

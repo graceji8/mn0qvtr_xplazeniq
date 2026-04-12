@@ -735,9 +735,22 @@ def get_project_dir(service=None, fallback=True):
 
     if news_mode:
         log(f"   📂 News root: {news_root}")
-        target_date = datetime.now(ZoneInfo('America/Los_Angeles'))
-        date_dir = news_root / target_date.strftime("%Y") / target_date.strftime("%m") / target_date.strftime("%Y-%m-%d")
-        if date_dir.exists():
+        now_la = datetime.now(ZoneInfo('America/Los_Angeles'))
+        # NEW: look back up to NEWS_LOOKBACK_DAYS days (0 = today, 1 = yesterday, …)
+        NEWS_LOOKBACK_DAYS = int(os.environ.get("NEWS_LOOKBACK_DAYS", "3"))
+
+        for day_offset in range(NEWS_LOOKBACK_DAYS + 1):
+            target_date = now_la - timedelta(days=day_offset)
+            date_dir = (
+                news_root
+                / target_date.strftime("%Y")
+                / target_date.strftime("%m")
+                / target_date.strftime("%Y-%m-%d")
+            )
+            if not date_dir.exists():
+                log(f"   Skip: No news folder for {target_date.strftime('%Y-%m-%d')}")
+                continue
+
             # Loop all subfolders under the date directory
             project_dirs = sorted(
                 [d for d in date_dir.iterdir() if d.is_dir()],
@@ -753,7 +766,8 @@ def get_project_dir(service=None, fallback=True):
                     else:
                         continue
                 if not list(project_dir.glob("veo_*.mp4")):
-                    log(f"✨ Found pending news project: {project_dir.name} (in {target_date.strftime('%Y-%m-%d')})")
+                    log(f"✨ Found pending news project: {project_dir.name} "
+                        f"(in {target_date.strftime('%Y-%m-%d')}, -{day_offset}d)")
                     return project_dir
     else:
         log("   ⚠️ News root folder not found.")
@@ -767,29 +781,40 @@ def get_project_dir(service=None, fallback=True):
         if news_root_id:
             news_mode = True
             current_date = datetime.now(ZoneInfo('America/Los_Angeles'))
-            year_str  = current_date.strftime("%Y")
-            month_str = current_date.strftime("%m")
-            date_str  = current_date.strftime("%Y-%m-%d")
-            year_id = get_drive_folder_id(service, year_str, news_root_id)
-            if year_id:
+            NEWS_LOOKBACK_DAYS = int(os.environ.get("NEWS_LOOKBACK_DAYS", "3"))
+            for day_offset in range(NEWS_LOOKBACK_DAYS + 1):
+                scan_date = current_date - timedelta(days=day_offset)
+                year_str  = scan_date.strftime("%Y")
+                month_str = scan_date.strftime("%m")
+                date_str  = scan_date.strftime("%Y-%m-%d")
+
+                year_id = get_drive_folder_id(service, year_str, news_root_id)
+                if not year_id:
+                    continue
                 month_id = get_drive_folder_id(service, month_str, year_id)
-                if month_id:
-                    date_id = get_drive_folder_id(service, date_str, month_id)
-                    if date_id:
-                        # Fetch all subfolders under the date folder; no name filtering
-                        results = service.files().list(
-                            q=f"'{date_id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false",
-                            fields="files(name)"
-                        ).execute()
-                        news_folders = results.get('files', [])
-                        if news_folders:
-                            log(f"   🔎 Found {len(news_folders)} project folders in {date_str}: {[f['name'] for f in news_folders]}")
-                            # Sort descending so newest/highest-numbered project is tried first
-                            for f in sorted(news_folders, key=lambda x: x['name'], reverse=True):
-                                project_name = f"news/{year_str}/{month_str}/{date_str}/{f['name']}"
-                                if check_drive_project_needs_video(service, project_name):
-                                    log(f"✨ Found news project needing video (on Drive): {f['name']} ({date_str})")
-                                    return root_dir / "news" / year_str / month_str / date_str / f['name']
+                if not month_id:
+                    continue
+                date_id = get_drive_folder_id(service, date_str, month_id)
+                if not date_id:
+                    log(f"   ⏭️  No Drive folder for {date_str}, skipping.")
+                    continue
+
+                results = service.files().list(
+                    q=f"'{date_id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false",
+                    fields="files(name)"
+                ).execute()
+                news_folders = results.get('files', [])
+                if news_folders:
+                    log(f"   🔎 Found {len(news_folders)} project folders in {date_str} "
+                        f"(-{day_offset}d): {[f['name'] for f in news_folders]}")
+                    for f in sorted(news_folders, key=lambda x: x['name'], reverse=True):
+                        project_name = f"news/{year_str}/{month_str}/{date_str}/{f['name']}"
+                        if check_drive_project_needs_video(service, project_name):
+                            log(f"✨ Found news project needing video (on Drive): "
+                                f"{f['name']} ({date_str}, -{day_offset}d)")
+                            return (
+                                root_dir / "news" / year_str / month_str / date_str / f['name']
+                            )
 
         if news_mode:
             log("✅ News mode active — no pending news projects found. Exiting project search.")
