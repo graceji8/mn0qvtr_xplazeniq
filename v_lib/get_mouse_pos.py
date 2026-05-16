@@ -1,3 +1,7 @@
+import os
+if 'DISPLAY' not in os.environ:
+    os.environ['DISPLAY'] = ':99'
+
 import pyautogui
 import sys
 import time

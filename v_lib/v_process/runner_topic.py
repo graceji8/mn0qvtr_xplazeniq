@@ -914,6 +914,23 @@ def main():
 
     pyautogui.click(1968, 104); time.sleep(3)
     pyautogui.click(1970, 107); time.sleep(3)
+
+    finder = ScreenTemplateFinder(confidence_threshold=0.6) 
+    sign_in_pos = finder.position_template_exists(str(script_dir / "realtime" / "sign_in.png"))
+    if sign_in_pos:
+        pyautogui.click(sign_in_pos[0], sign_in_pos[1])
+        time.sleep(3)
+        pyautogui.click(1557, 647)
+        time.sleep(6)
+        pyautogui.click(1118, 699)
+        time.sleep(3)
+    else:
+        log("✅ Sign in button not found, assuming already signed in")
+        
+    # wait until type enter in terminal
+    # input("Press Enter after you finish signing in and video is ready to start")
+
+
         
     config = load_config()
     screen_w, screen_h = pyautogui.size()
