@@ -1,4 +1,4 @@
-name: V-Topic-Automation
+name: V-Topic-setup
 
 on:
   workflow_dispatch:
